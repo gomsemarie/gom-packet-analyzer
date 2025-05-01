@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Network Viewer</title>
+    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+    <style>
+      body {
+        font-family: Consolas, monospace;
+        background: #121212;
+        color: #eee;
+        margin: 0;
+        padding: 0;
+      }
+      h1 {
+        margin: 10px;
+      }
+      .controls {
+        padding: 10px;
+        background: #1e1e1e;
+        border-bottom: 1px solid #444;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+      .split {
+        display: flex;
+        height: 45vh;
+        overflow: hidden;
+      }
+      .pane {
+        flex: 1;
+        overflow-y: auto;
+        border-right: 1px solid #333;
+        padding: 10px;
+      }
+      .pane:last-child {
+        border-right: none;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 4px 6px;
+        border-bottom: 1px solid #333;
+      }
+      tr:hover {
+        background: #2c2c2c;
+        cursor: pointer;
+      }
+      .entry {
+        padding: 10px;
+        background: #1e1e1e;
+        border-top: 1px solid #444;
+      }
+      .hexview {
+        font-family: monospace;
+        white-space: pre;
+        background: #1e1e1e;
+        color: #ddd;
+        padding: 10px;
+        overflow-x: auto;
+      }
+      input,
+      button {
+        background: #222;
+        color: #eee;
+        border: 1px solid #555;
+        padding: 5px;
+      }
+      input::placeholder {
+        color: #888;
+      }
+      .GET {
+        background-color: #203040;
+      }
+      .POST {
+        background-color: #402020;
+      }
+      .status-200 {
+        color: #4caf50;
+      }
+      .status-400,
+      .status-500 {
+        color: #ff5722;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>📡 Fetch/XHR & TCP Traffic Viewer</h1>
+    <div class="controls">
+      <label
+        >TCP 필터 포트:
+        <input
+          type="number"
+          id="tcpPort"
+          placeholder="전체 보기"
+          onchange="window.setTcpPort(this.value)"
+      /></label>
+      <label
+        >검색:
+        <input
+          id="searchInput"
+          placeholder="내용 검색"
+          oninput="filterTables()"
+      /></label>
+      <button onclick="window.toggleSniffing(true)">🟢 수집 시작</button>
+      <button onclick="window.toggleSniffing(false)">⛔ 수집 정지</button>
+    </div>
+    <div class="split">
+      <div class="pane">
+        <h3>HTTP Requests</h3>
+        <table id="httpTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Method</th>
+              <th>URL</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="pane">
+        <h3>TCP Packets</h3>
+        <table id="tcpTable">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>From</th>
+              <th>To</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="detail" class="entry">
+      선택한 항목의 상세 정보가 여기에 표시됩니다.
+    </div>
+
+    <script>
+      let httpList = [];
+      let tcpList = [];
+      const MAX_ENTRIES = 50;
+
+      function scrollToTop(tableId) {
+        const table = document.getElementById(tableId);
+        table.scrollTop = 0;
+      }
+
+      function filterTables() {
+        const term = document.getElementById("searchInput").value.toLowerCase();
+        ["httpTable", "tcpTable"].forEach((id) => {
+          const rows = document.querySelectorAll(`#${id} tbody tr`);
+          rows.forEach((row) => {
+            const match = row.innerText.toLowerCase().includes(term);
+            row.style.display = match ? "" : "none";
+          });
+        });
+      }
+
+      function formatHexDump(hexString) {
+        const bytes = hexString.match(/.{1,2}/g) || [];
+        let lines = [];
+        for (let i = 0; i < bytes.length; i += 16) {
+          const chunk = bytes.slice(i, i + 16);
+          const offset = i.toString(16).padStart(4, "0");
+          const hex = chunk.map((b) => b.padEnd(2)).join(" ");
+          const ascii = chunk
+            .map((b) => {
+              const char = String.fromCharCode(parseInt(b, 16));
+              return /[\x20-\x7E]/.test(char) ? char : ".";
+            })
+            .join("");
+          lines.push(`${offset}  ${hex.padEnd(48)}  ${ascii}`);
+        }
+        return lines.join("\n");
+      }
+
+      function showDetail(html) {
+        document.getElementById("detail").innerHTML = html;
+      }
+
+      function addHttp(packet) {
+        httpList.unshift(packet);
+        if (httpList.length > MAX_ENTRIES) httpList.pop();
+        const tbody = document.querySelector("#httpTable tbody");
+        tbody.innerHTML = httpList
+          .map(
+            (p, i) =>
+              `<tr onclick="showHttp(${i})" class="${p.method} status-${p.status}"><td>${p.id}</td><td>${p.method}</td><td>${p.url}</td></tr>`
+          )
+          .join("");
+        scrollToTop("httpTable");
+        filterTables();
+      }
+
+      function addTcp(packet) {
+        tcpList.unshift(packet);
+        if (tcpList.length > MAX_ENTRIES) tcpList.pop();
+        const tbody = document.querySelector("#tcpTable tbody");
+        tbody.innerHTML = tcpList
+          .map(
+            (p, i) =>
+              `<tr onclick="showTcp(${i})"><td>${p.id}</td><td>${p.src}:${p.src_port}</td><td>${p.dst_port}</td></tr>`
+          )
+          .join("");
+        scrollToTop("tcpTable");
+        filterTables();
+      }
+
+      function showHttp(i) {
+        const p = httpList[i];
+        showDetail(`
+        <h2>HTTP #${p.id} - ${p.method}</h2>
+        <div class='url'>${p.url}</div>
+        <h3>Headers</h3><pre>${JSON.stringify(p.headers, null, 2)}</pre>
+        <h3>Payload</h3><pre>${JSON.stringify(p.payload, null, 2)}</pre>
+        <h3>Status</h3><pre>${p.status}</pre>
+        <h3>Response</h3><pre>${p.response}</pre>
+      `);
+      }
+
+      function showTcp(i) {
+        const p = tcpList[i];
+        showDetail(`
+        <h2>TCP #${p.id}</h2>
+        <div class='url'>From ${p.src}:${p.src_port} → ${p.dst_port}</div>
+        <h3>Payload</h3><pre>${p.payload}</pre>
+        <h3>Hex</h3><div class='hexview'>${formatHexDump(p.hex)}</div>
+        <h3>Timestamp</h3><pre>${new Date(
+          p.timestamp * 1000
+        ).toISOString()}</pre>
+      `);
+      }
+
+      new QWebChannel(qt.webChannelTransport, function (channel) {
+        const qtBridge = channel.objects.qtBridge;
+
+        window.setTcpPort = (val) =>
+          qtBridge.setTcpPort(val ? parseInt(val) : null);
+        window.toggleSniffing = (state) => qtBridge.setSniffingEnabled(state);
+        window.addPacket = addHttp;
+        window.addTcpPacket = addTcp;
+        window.addMatchResult = (r) =>
+          showDetail(
+            `<h2>Matched ✅</h2><div>${r.url}</div><pre>${r.payload}</pre>`
+          );
+      });
+    </script>
+  </body>
+</html>
